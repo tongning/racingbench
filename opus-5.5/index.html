@@ -1,0 +1,856 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Endless Road</title>
+<link rel="icon" href="data:,">
+<style>
+  html, body { height: 100%; margin: 0; overflow: hidden; background: #2b74d8; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  .hud {
+    position: fixed; top: 20px; color: #fff; pointer-events: none; user-select: none;
+    font: 700 44px/1 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-variant-numeric: tabular-nums;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, .55), 0 0 14px rgba(0, 0, 0, .45);   /* stays legible over clouds */
+  }
+  .hud small { margin-left: 6px; font-size: 15px; font-weight: 600; letter-spacing: .04em; opacity: .85; }
+  #speed { left: 26px; }
+  #distance { right: 26px; }
+  #hint {
+    position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%);
+    padding: 10px 18px; border-radius: 999px; background: rgba(0, 0, 0, .45); color: #fff;
+    font: 500 15px/1 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    white-space: nowrap; pointer-events: none; user-select: none; transition: opacity .6s;
+  }
+  #hint.hidden { opacity: 0; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="speed" class="hud"><span>0</span><small>km/h</small></div>
+<div id="distance" class="hud"><span>0.00</span><small>km</small></div>
+<div id="hint">&uarr; accelerate &nbsp;&middot;&nbsp; &darr; brake &nbsp;&middot;&nbsp; &larr; &rarr; steer</div>
+
+<script>
+(() => {
+  'use strict';
+
+  // ── Tuning ────────────────────────────────────────────────────────────────
+  const STEP = 1 / 60;                      // fixed simulation timestep, seconds
+  const SEGMENT_LENGTH = 200;               // world units per road segment
+  const RUMBLE_LENGTH = 3;                  // segments per light/dark stripe
+  const ROAD_WIDTH = 2000;                  // road half-width: 4 lanes of 1000 units
+  const LANES = 4;
+  const DRAW_DISTANCE = 300;                // segments drawn ahead of the camera
+  const FOG_DENSITY = 5;
+  const FOG_STEPS = 48;                     // fog gradations for road colours
+  const SPRITE_FOG_STEPS = 12;              // … and for scenery sprites
+  const HORIZON = 0.46;                     // horizon line, as a fraction of screen height
+  const CAR_ROW = 0.88;                     // screen row the car's wheels sit on
+  const FOCAL = 0.5;                        // focal length, as a fraction of screen height
+  const NEAR = 50;                          // closest depth we project (avoids dividing by ~0)
+  const CAMERA_FOLLOW = 0.65;               // how much the camera tracks the car sideways
+  const CAR_WIDTH = 640;
+  const CAR_LENGTH = 650;                   // nose-to-tail distance at which two cars touch
+  const CAR_CLEARANCE = 0.3;                // … and side to side, in road half-widths
+  const MAX_X = 2.6;                        // how far onto the verge the car can stray (1 = road edge)
+  const MAX_SPEED = SEGMENT_LENGTH / STEP;
+  const ACCEL = MAX_SPEED / 5;
+  const BRAKING = -MAX_SPEED;
+  const COASTING = -MAX_SPEED / 5;
+  const OFF_ROAD_DECEL = -MAX_SPEED / 2;
+  const OFF_ROAD_LIMIT = MAX_SPEED / 4;
+  const CENTRIFUGAL = 0.2;                  // flat out, full lock just fails to hold the sharpest bends
+  const TOP_SPEED_KMH = 260;
+
+  // Traffic. Distances are world units, sideways measures are road half-widths (a lane is 0.5).
+  const TRAFFIC_COUNT = 18;
+  const TRAFFIC_SPEED = [0.3, 0.6];         // cruising speeds, as fractions of MAX_SPEED
+  const TRAFFIC_ACCEL = MAX_SPEED / 6;
+  const TRAFFIC_BRAKE = MAX_SPEED;
+  const LANE_CHANGE = 0.6;                  // sideways speed when pulling out, per second
+  const LOOK_AHEAD = 8000;                  // how far traffic watches the road in front of it
+  const BLOCK_X = 0.4;                      // nearer than this sideways counts as in the way
+  const SAFE_GAP = 2 * CAR_LENGTH;          // room traffic keeps, before allowing for closing speed
+  const REACTION = 1.5;                     // seconds of closing speed it wants clear before pulling out
+  const SPAWN_AHEAD = [(DRAW_DISTANCE + 5) * SEGMENT_LENGTH, (DRAW_DISTANCE + 40) * SEGMENT_LENGTH];   // past the fog
+  const SPAWN_BEHIND = [-6000, -3000];      // behind the camera, out of sight
+
+  // Collisions.
+  const REAR_END_KEEP = 0.5;                // after hitting a car, fraction of *its* speed we are left with
+  const SCRAPE_DECEL = MAX_SPEED / 2;       // speed lost per second while rubbing along another car
+  const TREE_SLIDE = 1.2;                   // how fast a tree shoves us back toward the road, per second
+  const SHAKE = 14;                         // screen shake at full strength, px
+
+  // Road markings, as fractions of the road half-width. Neighbouring surfaces overlap a
+  // little (rumble under asphalt, grass under rumble) so no gap shows along their shared edge.
+  const RUMBLE_INNER = 0.99, RUMBLE_OUTER = 1.07;
+  const GRASS_EDGE = 1.05;
+  const LANE_MARK = 0.012;
+
+  const COLORS = {
+    sky: ['#2b74d8', '#7fbcf2', '#d9eefb'],
+    fog: '#8db59a',                         // distant ground fades into the nearest hills
+    grass: ['#63b340', '#58a638'],
+    rumble: ['#f4f4f4', '#d8362e'],
+    road: ['#72777c', '#6b7075'],
+    lane: '#f2f2f2',
+    mountainsFar: '#a9c1e0',
+    mountainsNear: '#88a5c8',
+  };
+
+  const TAU = Math.PI * 2;
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const mod = (a, n) => ((a % n) + n) % n;
+  const easeIn = t => t * t;
+  const easeInOut = t => (1 - Math.cos(Math.PI * t)) / 2;
+
+  function mulberry32(a) {
+    return () => {
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), a | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // Integer → [0, 1). Stateless, so the backdrop can be sampled anywhere without storing it.
+  function hash(n) {
+    n = Math.imul(n ^ (n >>> 15), 0x2c1b3c6d);
+    n = Math.imul(n ^ (n >>> 12), 0x297a2d39);
+    return ((n ^ (n >>> 15)) >>> 0) / 4294967296;
+  }
+
+  // Fractal 1D value noise in [0, 1]. Linear interpolation gives jagged peaks, smooth gives rolling hills.
+  function noise(u, seed, octaves, smooth) {
+    let sum = 0, amp = 1, total = 0;
+    for (let o = 0; o < octaves; o++) {
+      const x = u * (1 << o), i = Math.floor(x), f = x - i;
+      const a = hash(i + seed + o * 1013), b = hash(i + 1 + seed + o * 1013);
+      sum += (a + (b - a) * (smooth ? f * f * (3 - 2 * f) : f)) * amp;
+      total += amp;
+      amp *= 0.5;
+    }
+    return sum / total;
+  }
+
+  // ── Sprites (drawn once to offscreen canvases) ────────────────────────────
+  // Each sprite is pre-tinted toward the fog colour in steps, so distant scenery hazes over
+  // while staying opaque (fading with alpha would let farther trees show through nearer ones).
+  //   ground: how far down the image the ground line sits (1 = its bottom edge)
+  //   solid:  fraction of its width that blocks the car (a trunk, not the canopy)
+  function makeSprite({ w, h, worldHeight, ground = 1, solid = 0 }, draw) {
+    const tints = [];
+    for (let step = 0; step < SPRITE_FOG_STEPS; step++) {
+      const res = step === 0 ? 2 : 1;       // unfogged means close, and close sprites fill the screen
+      const img = document.createElement('canvas');
+      img.width = w * res;
+      img.height = h * res;
+      const g = img.getContext('2d');
+      g.scale(res, res);
+      g.save();
+      draw(g, w, h);
+      g.restore();
+      g.globalCompositeOperation = 'source-atop';
+      g.globalAlpha = step / (SPRITE_FOG_STEPS - 1);
+      g.fillStyle = COLORS.fog;
+      g.fillRect(0, 0, w, h);
+      tints.push(img);
+    }
+    return { tints, w: worldHeight * w / h, h: worldHeight, ground, solid };
+  }
+
+  const PINE = makeSprite({ w: 240, h: 480, worldHeight: 3400, solid: 0.25 }, (g, w, h) => {
+    g.fillStyle = '#6b4a2f';
+    g.fillRect(w / 2 - 14, h - 90, 28, 90);
+    for (let i = 0; i < 4; i++) {
+      const top = h * (0.02 + i * 0.17), bottom = top + h * 0.34, half = w * (0.22 + i * 0.09);
+      for (const [color, left] of [['#2c6a3b', w / 2 - half], ['#3a8a4b', w / 2]]) {   // shaded, then sunlit half
+        g.fillStyle = color;
+        g.beginPath();
+        g.moveTo(w / 2, top);
+        g.lineTo(left, bottom);
+        g.lineTo(w / 2 + half, bottom);
+        g.fill();
+      }
+    }
+  });
+
+  const OAK = makeSprite({ w: 360, h: 400, worldHeight: 2800, solid: 0.14 }, (g, w, h) => {
+    g.fillStyle = '#6b4a2f';
+    g.fillRect(w / 2 - 18, h * 0.55, 36, h * 0.45);
+    const blobs = (color, list) => {
+      g.fillStyle = color;
+      for (const [x, y, r] of list) {
+        g.beginPath();
+        g.arc(w * x, h * y, w * r, 0, TAU);
+        g.fill();
+      }
+    };
+    blobs('#3c8a38', [[0.5, 0.34, 0.3], [0.28, 0.44, 0.22], [0.72, 0.44, 0.22], [0.5, 0.52, 0.26]]);
+    blobs('#55a947', [[0.57, 0.27, 0.17], [0.76, 0.4, 0.11], [0.36, 0.36, 0.1]]);
+  });
+
+  // ── Cars ──────────────────────────────────────────────────────────────────
+  const PLAYER_LIVERY = { top: '#f04a45', bottom: '#bd1d28', cabin: '#c9212b', trim: '#99121c' };
+  const TRAFFIC_LIVERIES = [                // never red, so the player's car always stands out
+    { top: '#5b9df0', bottom: '#2460b5', cabin: '#2f72cf', trim: '#1b4a8f' },   // blue
+    { top: '#f7d354', bottom: '#cf9a14', cabin: '#e2b022', trim: '#a47a0d' },   // yellow
+    { top: '#f5f6f8', bottom: '#c2c8d0', cabin: '#dfe3e8', trim: '#98a0ab' },   // white
+    { top: '#a77bf0', bottom: '#6a3fc0', cabin: '#7d50d6', trim: '#4f2c96' },   // purple
+  ];
+
+  function box(g, x, y, w, h, radius, color) {
+    g.fillStyle = color;
+    g.beginPath();
+    g.roundRect(x, y, w, h, radius);
+    g.fill();
+  }
+
+  // Rear view of a car on any 2D context, in units of the car's width with the origin on the ground
+  // under its centre. lean (-1 … 1) is how hard it is steering; bounce lifts the body on its tyres.
+  function paintCar(g, livery, lean, bounce, braking) {
+    const yaw = lean * 0.035;               // slide the cabin sideways to suggest the car turning in
+
+    g.fillStyle = 'rgba(0, 0, 0, 0.28)';
+    g.beginPath();
+    g.ellipse(0, 0, 0.57, 0.07, 0, 0, TAU);
+    g.fill();
+    box(g, -0.5, -0.25, 0.18, 0.25, 0.05, '#17191c');                    // tyres stay planted …
+    box(g, 0.32, -0.25, 0.18, 0.25, 0.05, '#17191c');
+
+    g.save();
+    g.translate(0, bounce);                                              // … while the body bounces
+    g.rotate(-lean * 0.02);                                              // and rolls away from the turn
+    box(g, -0.38, -0.17, 0.76, 0.11, 0.02, '#24282d');                   // diffuser
+
+    const paint = g.createLinearGradient(0, -0.42, 0, -0.13);
+    paint.addColorStop(0, livery.top);
+    paint.addColorStop(1, livery.bottom);
+    box(g, -0.49, -0.42, 0.98, 0.29, 0.07, paint);                       // body
+
+    g.fillStyle = g.strokeStyle = livery.cabin;                          // cabin
+    g.lineWidth = 0.04;
+    g.lineJoin = 'round';
+    g.beginPath();
+    g.moveTo(-0.39, -0.41);
+    g.lineTo(-0.3 + yaw, -0.62);
+    g.lineTo(0.3 + yaw, -0.62);
+    g.lineTo(0.39, -0.41);
+    g.closePath();
+    g.fill();
+    g.stroke();
+
+    g.fillStyle = '#1b2530';                                             // rear window
+    g.beginPath();
+    g.moveTo(-0.335, -0.425);
+    g.lineTo(-0.262 + yaw, -0.6);
+    g.lineTo(0.262 + yaw, -0.6);
+    g.lineTo(0.335, -0.425);
+    g.fill();
+    g.fillStyle = '#31465b';                                             // glass reflection
+    g.beginPath();
+    g.moveTo(-0.2, -0.425);
+    g.lineTo(-0.15 + yaw, -0.6);
+    g.lineTo(-0.02 + yaw, -0.6);
+    g.lineTo(-0.07, -0.425);
+    g.fill();
+
+    box(g, -0.47, -0.475, 0.94, 0.04, 0.015, livery.trim);               // spoiler
+    if (braking) {
+      box(g, -0.48, -0.4, 0.3, 0.13, 0.05, 'rgba(255, 70, 50, 0.35)');
+      box(g, 0.18, -0.4, 0.3, 0.13, 0.05, 'rgba(255, 70, 50, 0.35)');
+    }
+    const lamp = braking ? '#ff6a55' : '#96141a';
+    box(g, -0.45, -0.37, 0.24, 0.07, 0.025, lamp);                       // tail lights
+    box(g, 0.21, -0.37, 0.24, 0.07, 0.025, lamp);
+    box(g, -0.11, -0.275, 0.22, 0.085, 0.012, '#eef1f4');                // number plate
+
+    g.fillStyle = '#0c0d0f';                                             // exhausts
+    g.beginPath();
+    g.arc(-0.24, -0.115, 0.03, 0, TAU);
+    g.arc(0.24, -0.115, 0.03, 0, TAU);
+    g.fill();
+    g.restore();
+  }
+
+  // Traffic is the same car in other colours, pre-rendered so it hazes with distance like the trees.
+  // The image is 1.2 car-widths wide to fit the shadow, which also dips below the ground line.
+  const CAR_IMAGE = { w: 240, h: 150, worldHeight: 1.2 * CAR_WIDTH * 150 / 240, ground: 0.88 };
+  const TRAFFIC_SPRITES = TRAFFIC_LIVERIES.map(livery => makeSprite(CAR_IMAGE, (g, w, h) => {
+    g.translate(w / 2, h * CAR_IMAGE.ground);
+    g.scale(w / 1.2, w / 1.2);
+    paintCar(g, livery, 0, 0, false);
+  }));
+
+  // ── Road: an endless stream of segments held in a sliding window ──────────
+  const seed = Number(new URLSearchParams(location.search).get('seed')) || (Date.now() >>> 0);
+  const rand = mulberry32(seed);
+  const randInt = (lo, hi) => lo + Math.floor(rand() * (hi - lo + 1));
+
+  const road = { segments: [], first: 0 };  // segments[i].index === first + i
+  const piece = { n: 0, total: 0, enter: 0, hold: 0, leave: 0, curve: 0, y0: 0, dy: 0 };
+  let nextIndex = 0, lastY = 0;
+
+  // A piece is one stretch of road: it eases into a curve, holds it, and eases back out,
+  // while the ground rises or falls across its whole length.
+  function startPiece() {
+    const previous = piece.curve;
+    const strength = 1.5 + rand() * 4.5;    // gentle sweepers up to sharp bends
+    piece.n = 0;
+    piece.enter = randInt(20, 60);
+    piece.hold = randInt(20, 110);
+    piece.leave = randInt(20, 60);
+    piece.total = piece.enter + piece.hold + piece.leave;
+
+    if (nextIndex === 0 || rand() < 0.2) piece.curve = 0;                                 // straight
+    else if (previous !== 0 && rand() < 0.4) piece.curve = -Math.sign(previous) * strength; // S-bend
+    else piece.curve = (rand() < 0.5 ? -1 : 1) * strength;
+
+    piece.y0 = lastY;
+    piece.dy = nextIndex === 0 || rand() < 0.35 ? 0 : (rand() * 2 - 1) * piece.total * 28;
+    if (Math.abs(piece.y0 + piece.dy) > 6000) piece.dy = -piece.dy;   // keep the height from drifting away
+  }
+
+  function nextSegment() {
+    if (piece.n >= piece.total) startPiece();
+    const n = piece.n++;
+    let curve = piece.curve;
+    if (n < piece.enter) curve *= easeIn(n / piece.enter);
+    else if (n >= piece.enter + piece.hold) curve *= 1 - easeInOut((n - piece.enter - piece.hold) / piece.leave);
+
+    const y1 = lastY;
+    lastY = piece.y0 + piece.dy * easeInOut((n + 1) / piece.total);
+    const segment = { index: nextIndex++, curve, y1, y2: lastY, sprites: null };
+    plantTrees(segment);
+    return segment;
+  }
+
+  function plantTrees(segment) {
+    const density = 0.15 + 0.6 * noise(segment.index / 50, 77, 1, true);   // woods thicken and thin out
+    for (let side = -1; side <= 1; side += 2) {
+      if (rand() > density) continue;
+      (segment.sprites ??= []).push({
+        sprite: rand() < 0.55 ? PINE : OAK,
+        offset: side * (1.9 + 6 * rand() * rand()),   // in road half-widths; always beyond MAX_X
+        size: 0.75 + 0.6 * rand(),
+      });
+    }
+  }
+
+  const segmentAt = z => road.segments[Math.floor(z / SEGMENT_LENGTH) - road.first];
+
+  // Generate road ahead of the draw distance and drop what the camera has passed.
+  function syncRoad() {
+    const camIndex = Math.floor(position / SEGMENT_LENGTH);
+    while (road.first + road.segments.length <= camIndex + DRAW_DISTANCE + 4) road.segments.push(nextSegment());
+    if (camIndex - road.first > 64) {
+      road.segments.splice(0, camIndex - 1 - road.first);
+      road.first = camIndex - 1;
+    }
+  }
+
+  // ── Game state ────────────────────────────────────────────────────────────
+  let position = 0;                         // camera's distance along the road
+  let playerX = 0.25;                       // car's sideways position; -1 … 1 spans the road
+  let speed = 0;
+  let steer = 0;                            // eased steering input, -1 … 1
+  let heading = 0;                          // how far we have turned, in screen heights of backdrop scroll
+  let time = 0;
+  const input = { up: false, down: false, left: false, right: false };
+
+  const KEYS = {
+    ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
+    KeyW: 'up', KeyS: 'down', KeyA: 'left', KeyD: 'right',
+  };
+  const hint = document.getElementById('hint');
+
+  addEventListener('keydown', e => {
+    const action = KEYS[e.code];
+    if (!action || e.metaKey || e.ctrlKey || e.altKey) return;
+    input[action] = true;
+    hint.classList.add('hidden');
+    e.preventDefault();                     // arrow keys must not scroll the page
+  });
+  addEventListener('keyup', e => {
+    const action = KEYS[e.code];
+    if (action) input[action] = false;
+  });
+  addEventListener('blur', () => {
+    input.up = input.down = input.left = input.right = false;
+  });
+
+  // ── Traffic ───────────────────────────────────────────────────────────────
+  // A fixed pool of cars, recycled as the player leaves them behind (or they leave the player), so
+  // the road stays populated forever. A separate random stream keeps ?seed= roads reproducible.
+  const trafficRand = mulberry32(seed ^ 0x9e3779b9);
+  const pick = ([lo, hi]) => lo + trafficRand() * (hi - lo);
+  const laneCentre = lane => (lane + 0.5) / LANES * 2 - 1;
+
+  const me = { z: 0, x: 0, speed: 0, drawZ: 0 };   // the player's car, as traffic sees it
+  const traffic = Array.from({ length: TRAFFIC_COUNT },   // parked far behind until placed on the road
+    () => ({ z: -1e9, x: 0, lane: 0, speed: 0, cruise: 0, side: 1, sprite: null, drawZ: 0 }));
+  const vehicles = [...traffic, me];
+
+  // Would a car at z in this lane, doing speed v, have room from everything else there?
+  // The faster the gap to a neighbour is closing, the more room it needs.
+  function laneClear(self, lane, z, v) {
+    const x = laneCentre(lane);
+    for (const other of vehicles) {
+      if (other === self || (other.lane !== lane && Math.abs(other.x - x) >= BLOCK_X)) continue;
+      const ahead = other.z - z;
+      const closing = ahead > 0 ? v - other.speed : other.speed - v;
+      if (Math.abs(ahead) < SAFE_GAP + Math.max(0, closing) * REACTION) return false;
+    }
+    return true;
+  }
+
+  // Put a car on the road at z, in whichever lane has room. If none has, leave it for a later try.
+  function placeCar(car, z) {
+    const cruise = MAX_SPEED * pick(TRAFFIC_SPEED), firstLane = Math.floor(trafficRand() * LANES);
+    for (let n = 0; n < LANES; n++) {
+      const lane = (firstLane + n) % LANES;
+      if (!laneClear(car, lane, z, cruise)) continue;
+      car.z = z;
+      car.lane = lane;
+      car.x = laneCentre(lane);
+      car.speed = car.cruise = cruise;
+      car.side = trafficRand() < 0.5 ? -1 : 1;   // which way it prefers to pull out
+      car.sprite = TRAFFIC_SPRITES[Math.floor(trafficRand() * TRAFFIC_SPRITES.length)];
+      return true;
+    }
+    return false;
+  }
+
+  function updateTraffic(dt) {
+    me.z = position + playerZ;
+    me.x = playerX;
+    me.speed = speed;
+
+    for (const car of traffic) {
+      const drift = laneCentre(car.lane) - car.x;   // sideways distance left to go in a lane change
+      let lead = null, gap = LOOK_AHEAD, squeezed = false;
+      for (const other of vehicles) {
+        if (other === car) continue;
+        const ahead = other.z - car.z, aside = other.x - car.x;
+        // The nearest thing ahead in this car's path, be it traffic or the player. It has to be a
+        // full car length ahead: anything nearer is alongside, and is driven past, not braked for.
+        if (ahead >= CAR_LENGTH && ahead < gap && Math.abs(aside) < BLOCK_X) {
+          lead = other;
+          gap = ahead;
+        }
+        // Something alongside, on the side it is moving toward: it must hold its line, not barge in.
+        // (Vehicles move one at a time within a tick, hence the allowance of a tick's travel.)
+        if (Math.abs(ahead) < CAR_LENGTH + MAX_SPEED * dt && aside * drift > 0 && Math.abs(aside) < CAR_CLEARANCE + 0.05) {
+          squeezed = true;
+        }
+      }
+
+      let target = car.cruise;
+      if (lead && lead.speed < car.cruise) {
+        // Held up. Pull out if a neighbouring lane has room (and we aren't already mid-manoeuvre) …
+        if (Math.abs(drift) < 0.01) {
+          for (const lane of [car.lane + car.side, car.lane - car.side]) {
+            if (lane >= 0 && lane < LANES && laneClear(car, lane, car.z, car.speed)) {
+              car.lane = lane;
+              break;
+            }
+          }
+        }
+        // … and meanwhile brake in time to sit behind it rather than run into it.
+        const closing = Math.max(0, car.speed - lead.speed);
+        if (gap < SAFE_GAP + closing * closing / (2 * TRAFFIC_BRAKE)) target = lead.speed;
+        if (gap < SAFE_GAP) car.speed = Math.min(car.speed, lead.speed);
+      }
+      car.speed += clamp(target - car.speed, -TRAFFIC_BRAKE * dt, TRAFFIC_ACCEL * dt);
+      if (!squeezed) car.x += clamp(laneCentre(car.lane) - car.x, -LANE_CHANGE * dt, LANE_CHANGE * dt);
+      car.z += car.speed * dt;
+
+      if (car.z < position + SPAWN_BEHIND[0]) placeCar(car, position + pick(SPAWN_AHEAD));        // we left it behind
+      else if (car.z > position + SPAWN_AHEAD[1]) placeCar(car, position + pick(SPAWN_BEHIND));   // it left us behind
+    }
+  }
+
+  // ── Collisions ────────────────────────────────────────────────────────────
+  let jolted = 0;                           // screen shake after an impact, 1 fading to 0
+  const jolt = strength => { jolted = Math.max(jolted, Math.min(1, strength)); };
+
+  function hitTraffic(dt) {
+    let scraping = false;
+    // Moving clear of one car can put us in contact with another, so repeat until things settle.
+    for (let pass = 0, touching = true; touching && pass < 3; pass++) {
+      touching = false;
+      for (const car of traffic) {
+        // Overlap nose to tail (world units) and side to side (road half-widths). The small
+        // thresholds ignore a car we have just been set exactly against.
+        const deep = CAR_LENGTH - Math.abs(car.z - position - playerZ);
+        const wide = CAR_CLEARANCE - Math.abs(playerX - car.x);
+        if (deep <= 0.01 || wide <= 1e-6) continue;
+        touching = true;
+
+        // Separate along whichever axis overlaps least: that is the side the cars met on. But if a
+        // later pass still finds us touching, sliding sideways was no way out (we are hemmed in on
+        // the other side too), so a car we have only just reached ahead simply stops us.
+        const hemmedIn = pass > 0 && deep < MAX_SPEED * dt;
+        if (car.z > position + playerZ && (deep < wide * ROAD_WIDTH || hemmedIn)) {
+          position -= deep;                 // ran into the back of it: held at its bumper …
+          if (speed > car.speed) {
+            jolt(1.5 * (speed - car.speed) / MAX_SPEED);
+            speed = car.speed * REAR_END_KEEP;   // … and slowed enough that it pulls away
+          }
+        } else {
+          playerX += playerX < car.x ? -wide : wide;   // side-swipe: slide apart
+          scraping = true;
+        }
+      }
+    }
+    if (scraping) {                         // rubbing along another car scrubs speed
+      speed = Math.max(0, speed - SCRAPE_DECEL * dt);
+      jolt(0.15);
+    }
+  }
+
+  // Trees stand on segment edges, so only the few edges under the car's nose need checking.
+  function hitTrees(dt) {
+    const z = position + playerZ;
+    const first = Math.floor(z / SEGMENT_LENGTH) + 1, last = Math.floor((z + CAR_LENGTH) / SEGMENT_LENGTH);
+    for (let index = first; index <= last; index++) {
+      const sprites = road.segments[index - road.first].sprites;
+      if (!sprites) continue;
+      for (const { sprite, offset, size } of sprites) {
+        const reach = (CAR_WIDTH + sprite.w * size * sprite.solid) / 2 / ROAD_WIDTH;
+        if (Math.abs(playerX - offset) >= reach) continue;
+        jolt(1.5 * speed / MAX_SPEED);
+        speed = 0;                                        // a tree doesn't give: stop dead …
+        playerX -= Math.sign(offset) * TREE_SLIDE * dt;   // … and slide off it, back toward the road
+      }
+    }
+  }
+
+  function update(dt) {
+    const segment = segmentAt(position + playerZ);
+    const speedPct = speed / MAX_SPEED;
+
+    const wanted = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+    steer += clamp(wanted - steer, -8 * dt, 8 * dt);
+
+    const dx = 2 * speedPct * dt;           // sideways authority scales with speed
+    playerX += dx * steer - dx * speedPct * segment.curve * CENTRIFUGAL;   // curves push the car outward
+
+    speed += (input.down ? BRAKING : input.up ? ACCEL : COASTING) * dt;
+    if (Math.abs(playerX) > 1 && speed > OFF_ROAD_LIMIT) speed += OFF_ROAD_DECEL * dt;   // grass drags
+    playerX = clamp(playerX, -MAX_X, MAX_X);
+    speed = clamp(speed, 0, MAX_SPEED);
+
+    position += speed * dt;
+    heading += FOCAL * segment.curve * speed / (SEGMENT_LENGTH * SEGMENT_LENGTH) * dt;
+    time += dt;
+    syncRoad();
+
+    updateTraffic(dt);
+    jolted = Math.max(0, jolted - 2.5 * dt);
+    hitTraffic(dt);
+    hitTrees(dt);
+  }
+
+  // ── Viewport ──────────────────────────────────────────────────────────────
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d', { alpha: false });
+  let W, H, horizonY, focal, cameraHeight, playerZ, skyGradient;
+
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = Math.round(W * dpr);
+    canvas.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    horizonY = H * HORIZON;
+    focal = H * FOCAL;
+    // Raise the camera on narrow windows so all four lanes stay in view beside the car.
+    cameraHeight = clamp(ROAD_WIDTH * (CAR_ROW - HORIZON) * H / (0.47 * W), 1200, 3200);
+    playerZ = FOCAL * cameraHeight / (CAR_ROW - HORIZON);   // puts the car on CAR_ROW
+
+    skyGradient = ctx.createLinearGradient(0, 0, 0, horizonY);
+    COLORS.sky.forEach((color, i) => skyGradient.addColorStop(i / (COLORS.sky.length - 1), color));
+  }
+  addEventListener('resize', resize);
+
+  // ── Rendering ─────────────────────────────────────────────────────────────
+  // Every road colour pre-blended toward the fog colour, so drawing never builds colour strings.
+  function shades(hex) {
+    const rgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+    const from = rgb(hex), to = rgb(COLORS.fog);
+    return Array.from({ length: FOG_STEPS }, (_, step) => {
+      const t = step / (FOG_STEPS - 1);
+      return `rgb(${from.map((v, i) => Math.round(v + (to[i] - v) * t)).join(',')})`;
+    });
+  }
+  const PALETTE = {
+    grass: COLORS.grass.map(shades),
+    rumble: COLORS.rumble.map(shades),
+    road: COLORS.road.map(shades),
+    lane: shades(COLORS.lane),
+  };
+
+  // Fog depends only on how many segments away something is, so tabulate it once.
+  const VISIBILITY = Float64Array.from({ length: DRAW_DISTANCE + 2 },
+    (_, i) => Math.exp(-((i / DRAW_DISTANCE) ** 2) * FOG_DENSITY));
+  const FOG_LEVEL = Array.from(VISIBILITY, v => Math.round((1 - v) * (FOG_STEPS - 1)));
+  const SPRITE_FOG_LEVEL = Array.from(VISIBILITY, v => Math.round((1 - v) * (SPRITE_FOG_STEPS - 1)));
+  const SPRITE_ALPHA = Array.from(VISIBILITY, v => Math.min(1, v * 10));   // only the farthest fade in
+
+  // Projection of each visible segment's near edge: road-centre x, y, half-width, px per world unit,
+  // plus the sideways drift the curves have accumulated by that point.
+  const edgeX = new Float64Array(DRAW_DISTANCE + 2);
+  const edgeY = new Float64Array(DRAW_DISTANCE + 2);
+  const edgeW = new Float64Array(DRAW_DISTANCE + 2);
+  const edgeScale = new Float64Array(DRAW_DISTANCE + 2);
+  const edgeDrift = new Float64Array(DRAW_DISTANCE + 2);
+  const drawOrder = [...vehicles];          // every car, re-sorted far to near each frame
+
+  // Trapezoid between a segment's near edge (y1) and far edge (y2), given its left and right x on each.
+  function quad(l1, r1, y1, l2, r2, y2) {
+    ctx.moveTo(l1, y1);
+    ctx.lineTo(r1, y1);
+    ctx.lineTo(r2, y2);
+    ctx.lineTo(l2, y2);
+    ctx.closePath();
+  }
+
+  function drawRidge(scroll, cell, height, color, seed, octaves, smooth) {
+    const step = cell / 16;                 // sample on the noise lattice so peaks don't shimmer as they scroll
+    let k = Math.floor((scroll - SHAKE) / step);
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(k * step - scroll, horizonY + 1);
+    for (; (k - 1) * step - scroll <= W + SHAKE; k++) {
+      ctx.lineTo(k * step - scroll, horizonY - height * noise(k / 16, seed, octaves, smooth));
+    }
+    ctx.lineTo((k - 1) * step - scroll, horizonY + 1);
+    ctx.fill();
+  }
+
+  const PUFFS = [[-1.9, 0.1, 0.75], [-0.9, -0.45, 1], [0.3, -0.75, 1.25], [1.4, -0.3, 0.95], [2.2, 0.15, 0.65]];
+
+  function drawClouds(scroll) {
+    const cell = H * 0.6;                   // one cloud per cell, jittered, so the sky is never bare
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+    for (let k = Math.floor(scroll / cell) - 1; k * cell - scroll < W + cell; k++) {
+      const x = (k + hash(k * 3)) * cell - scroll;
+      const y = H * (0.05 + 0.24 * hash(k * 3 + 1));
+      const s = H * (0.016 + 0.03 * hash(k * 3 + 2));
+      ctx.beginPath();
+      for (const [px, py, r] of PUFFS) {
+        ctx.moveTo(x + (px + r) * s, y + py * s);
+        ctx.arc(x + px * s, y + py * s, r * s, 0, TAU);
+      }
+      ctx.roundRect(x - 2.6 * s, y - 0.1 * s, 5.4 * s, 0.9 * s, 0.45 * s);
+      ctx.fill();
+    }
+  }
+
+  // Full-width fills overshoot the viewport by SHAKE so a jolted frame never shows a bare edge.
+  function drawBackdrop() {
+    const scroll = heading * H;
+    ctx.fillStyle = skyGradient;
+    ctx.fillRect(-SHAKE, -SHAKE, W + 2 * SHAKE, horizonY + 1 + SHAKE);
+
+    const glow = H * 0.34;
+    const sunX = mod(W * 0.68 - scroll * 0.3 + glow, W + 2 * glow) - glow, sunY = horizonY * 0.5;
+    const halo = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, glow);
+    halo.addColorStop(0, 'rgba(255, 246, 214, 0.85)');
+    halo.addColorStop(1, 'rgba(255, 246, 214, 0)');
+    ctx.fillStyle = halo;
+    ctx.fillRect(sunX - glow, sunY - glow, glow * 2, glow * 2);
+    ctx.fillStyle = '#fffdf0';
+    ctx.beginPath();
+    ctx.arc(sunX, sunY, H * 0.045, 0, TAU);
+    ctx.fill();
+
+    // Nearer layers scroll faster as the car turns.
+    drawClouds(scroll * 0.35 + time * H * 0.004);
+    drawRidge(scroll * 0.55, H * 0.7, H * 0.2, COLORS.mountainsFar, 1000, 3, false);
+    drawRidge(scroll * 0.75, H * 0.5, H * 0.12, COLORS.mountainsNear, 5000, 3, false);
+    drawRidge(scroll, H * 0.6, H * 0.05, COLORS.fog, 9000, 2, true);
+
+    ctx.fillStyle = COLORS.fog;
+    ctx.fillRect(-SHAKE, horizonY, W + 2 * SHAKE, H - horizonY + SHAKE);
+  }
+
+  // Sprite standing on the ground at screen (x, y). i is how many segments away it is, which sets its haze.
+  function drawSprite(sprite, x, y, scale, i) {
+    const w = sprite.w * scale, h = sprite.h * scale, top = y - h * sprite.ground;
+    if (x + w / 2 < 0 || x - w / 2 > W || top > H) return;
+    ctx.globalAlpha = SPRITE_ALPHA[i];
+    ctx.drawImage(sprite.tints[SPRITE_FOG_LEVEL[i]], x - w / 2, top, w, h);
+    ctx.globalAlpha = 1;
+  }
+
+  function drawPlayer(x, y, size) {
+    const offRoad = Math.abs(playerX) > 1;
+    const bounce = Math.sin(time * (offRoad ? 55 : 32)) * (offRoad ? 0.016 : 0.004) * Math.min(1, 3 * speed / MAX_SPEED);
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(size, size);
+    paintCar(ctx, PLAYER_LIVERY, steer, bounce, input.down && speed > 0);
+    ctx.restore();
+  }
+
+  // lead: seconds since the last simulation tick, used to extrapolate motion for this frame.
+  function drawRoad(camZ, lead) {
+    const segments = road.segments;
+    const baseIndex = Math.floor(camZ / SEGMENT_LENGTH);
+    const basePct = camZ / SEGMENT_LENGTH - baseIndex;
+    const base = baseIndex - road.first;
+
+    const carIndex = Math.floor((camZ + playerZ) / SEGMENT_LENGTH);
+    const carPct = (camZ + playerZ) / SEGMENT_LENGTH - carIndex;
+    const carSegment = segments[carIndex - road.first];
+    const camX = playerX * ROAD_WIDTH * CAMERA_FOLLOW;
+    const camY = carSegment.y1 + (carSegment.y2 - carSegment.y1) * carPct + cameraHeight;
+
+    // Project every segment edge. Curves are faked by sliding each successive edge sideways
+    // by a growing amount (drift), which bends the road without rotating the world.
+    let drift = 0, dDrift = -segments[base].curve * basePct;
+    for (let i = 0; i <= DRAW_DISTANCE + 1; i++) {
+      const segment = segments[base + i];
+      const scale = focal / Math.max((i - basePct) * SEGMENT_LENGTH, NEAR);
+      edgeDrift[i] = drift;
+      edgeScale[i] = scale;
+      edgeX[i] = W / 2 + scale * (drift - camX);
+      edgeY[i] = horizonY + scale * (camY - segment.y1);
+      edgeW[i] = scale * ROAD_WIDTH;
+      drift += dDrift;
+      dDrift += segment.curve;
+    }
+
+    // Cars, ours included, sorted far to near so each can be painted in its turn between the segments.
+    me.x = playerX;
+    me.drawZ = camZ + playerZ;
+    for (const car of traffic) car.drawZ = car.z + car.speed * lead;
+    drawOrder.sort((a, b) => b.drawZ - a.drawZ);
+    let next = 0;
+    while (next < drawOrder.length && drawOrder[next].drawZ >= (baseIndex + DRAW_DISTANCE + 1) * SEGMENT_LENGTH) next++;
+
+    // Paint far to near so hill crests and nearer scenery naturally cover what is behind them.
+    // Segment 0 straddles the camera and is never visible.
+    for (let i = DRAW_DISTANCE; i >= 1; i--) {
+      const segment = segments[base + i];
+      const x1 = edgeX[i], w1 = edgeW[i], x2 = edgeX[i + 1], y2 = edgeY[i + 1], w2 = edgeW[i + 1];
+      const y1 = edgeY[i] + 0.75;           // overlap the nearer segment to hide antialiasing seams
+
+      if (y2 < y1 && y2 < H) {              // skip ground facing away from us (far side of a crest)
+        const band = Math.floor(segment.index / RUMBLE_LENGTH) % 2, fog = FOG_LEVEL[i];
+
+        // Grass, rumble strips and asphalt are painted side by side rather than layered, so one
+        // surface's antialiased edge never shows through the surface painted over it.
+        const g1 = w1 * GRASS_EDGE, g2 = w2 * GRASS_EDGE;
+        const left = Math.min(-SHAKE, x1 - g1, x2 - g2), right = Math.max(W + SHAKE, x1 + g1, x2 + g2);
+        ctx.fillStyle = PALETTE.grass[band][fog];
+        ctx.beginPath();
+        quad(left, x1 - g1, y1, left, x2 - g2, y2);
+        quad(x1 + g1, right, y1, x2 + g2, right, y2);
+        ctx.fill();
+
+        ctx.fillStyle = PALETTE.rumble[band][fog];
+        ctx.beginPath();
+        quad(x1 - w1 * RUMBLE_OUTER, x1 - w1 * RUMBLE_INNER, y1, x2 - w2 * RUMBLE_OUTER, x2 - w2 * RUMBLE_INNER, y2);
+        quad(x1 + w1 * RUMBLE_INNER, x1 + w1 * RUMBLE_OUTER, y1, x2 + w2 * RUMBLE_INNER, x2 + w2 * RUMBLE_OUTER, y2);
+        ctx.fill();
+
+        ctx.fillStyle = PALETTE.road[band][fog];
+        ctx.beginPath();
+        quad(x1 - w1, x1 + w1, y1, x2 - w2, x2 + w2, y2);
+        ctx.fill();
+
+        if (band === 0) {                   // dashed dividers between the lanes
+          ctx.fillStyle = PALETTE.lane[fog];
+          ctx.beginPath();
+          for (let lane = 1; lane < LANES; lane++) {
+            const l = lane / LANES * 2 - 1 - LANE_MARK, r = l + 2 * LANE_MARK;
+            quad(x1 + w1 * l, x1 + w1 * r, y1, x2 + w2 * l, x2 + w2 * r, y2);
+          }
+          ctx.fill();
+        }
+      }
+
+      // Cars within this segment sit on the road at their own depth, between its two edges.
+      for (; next < drawOrder.length && drawOrder[next].drawZ >= (baseIndex + i) * SEGMENT_LENGTH; next++) {
+        const car = drawOrder[next];
+        const t = car.drawZ / SEGMENT_LENGTH - (baseIndex + i);
+        const scale = focal / (car.drawZ - camZ);
+        const drift = edgeDrift[i] + (edgeDrift[i + 1] - edgeDrift[i]) * t;
+        const x = W / 2 + scale * (drift + car.x * ROAD_WIDTH - camX);
+        const y = horizonY + scale * (camY - segment.y1 - (segment.y2 - segment.y1) * t);
+        if (car === me) drawPlayer(x, y, scale * CAR_WIDTH);
+        else drawSprite(car.sprite, x, y, scale, i);
+      }
+
+      if (segment.sprites) {                // trees stand on the segment's near edge
+        for (const { sprite, offset, size } of segment.sprites) {
+          drawSprite(sprite, x1 + offset * w1, edgeY[i], size * edgeScale[i], i);
+        }
+      }
+    }
+  }
+
+  const speedText = document.querySelector('#speed span');
+  const distanceText = document.querySelector('#distance span');
+
+  function setText(el, text) {
+    if (el.textContent !== text) el.textContent = text;
+  }
+
+  function render(lead) {
+    ctx.save();
+    ctx.translate(Math.sin(time * 97) * jolted * SHAKE, Math.cos(time * 83) * jolted * SHAKE * 0.6);
+    drawBackdrop();
+    drawRoad(position + speed * lead, lead);   // extrapolate past the last tick: smooth on >60 Hz displays
+    ctx.restore();
+    setText(speedText, String(Math.round(speed / MAX_SPEED * TOP_SPEED_KMH)));
+    setText(distanceText, (position / MAX_SPEED * TOP_SPEED_KMH / 3600).toFixed(2));
+  }
+
+  // ── Main loop ─────────────────────────────────────────────────────────────
+  let last = performance.now(), pending = 0;
+
+  function frame(now) {
+    pending += Math.min((now - last) / 1000, 0.1);   // cap, so returning to the tab doesn't fast-forward
+    last = now;
+    while (pending >= STEP) {
+      update(STEP);
+      pending -= STEP;
+    }
+    render(pending);
+    requestAnimationFrame(frame);
+  }
+
+  resize();
+  syncRoad();
+  for (const car of traffic) {              // spread the opening traffic down the road, clear of the start
+    for (let tries = 0; tries < 8; tries++) {
+      if (placeCar(car, (40 + 300 * trafficRand()) * SEGMENT_LENGTH)) break;
+    }
+  }
+  requestAnimationFrame(frame);
+
+  // Test hook: drive the simulation from the console without rendering.
+  window.game = {
+    input,
+    traffic,
+    step(n = 1) { while (n-- > 0) update(STEP); },
+    get state() {
+      const { curve, y1 } = segmentAt(position + playerZ);
+      return {
+        seed, position, speed, playerX, heading, jolted, curve, y: y1, z: position + playerZ,
+        first: road.first, segments: road.segments.length,
+      };
+    },
+  };
+})();
+</script>
+</body>
+</html>

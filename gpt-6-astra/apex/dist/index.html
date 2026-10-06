@@ -1,0 +1,525 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#172d32">
+  <meta name="description" content="Take the long way. An endless four-lane mountain drive. Hold the up arrow to accelerate, steer with left and right, and brake with down.">
+  <title>APEX — Endless Drive</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='9' fill='%23172d32'/%3E%3Cpath d='M7 30 19 8h4l11 22h-7l-6-13-7 13z' fill='%23f8794d'/%3E%3C/svg%3E">
+  <style>
+    :root { color-scheme: dark; font-family: 'Avenir Next', Avenir, 'Segoe UI', sans-serif; color: #fffdf4; --orange: #ff8659; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #9fbec4; }
+    button { font: inherit; color: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+    button:focus-visible { outline: 3px solid var(--orange); outline-offset: 5px; }
+    #world { display: block; width: 100%; height: 100%; }
+    .hud { position: fixed; inset: 0; pointer-events: none; isolation: isolate; }
+    .hud::after { content: ''; position: absolute; inset: 65% 0 0; background: linear-gradient(transparent, #10272c88); z-index: -1; }
+    header { position: absolute; inset: 32px 38px auto; display: flex; align-items: center; justify-content: space-between; gap: 16px; color: #17343c; }
+    .brand { display: flex; align-items: center; gap: 19px; }
+    .wordmark { font-size: 34px; font-style: italic; font-weight: 900; letter-spacing: -2px; line-height: 1; }
+    .wordmark span { color: #dc603b; }
+    .brand-caption { padding-left: 19px; border-left: 1px solid #29444c44; font-size: 11px; font-weight: 700; letter-spacing: 2.8px; line-height: 1.8; }
+    .header-right { display: flex; align-items: center; gap: 22px; }
+    .location { display: flex; align-items: center; gap: 11px; font-size: 12px; font-weight: 700; letter-spacing: 1.7px; }
+    .location svg { width: 28px; height: 24px; }
+    .icon-button { pointer-events: auto; display: grid; place-items: center; width: 44px; height: 44px; border: 1px solid #17343c40; border-radius: 50%; background: #ffffff21; color: #17343c; transition: background .2s; }
+    .icon-button:hover { background: #ffffff66; }
+    .icon-button svg { width: 17px; height: 17px; }
+    .drive-label { position: absolute; top: 106px; left: 40px; font-size: 11px; font-weight: 650; letter-spacing: 2.4px; color: #36545d; display: flex; align-items: center; gap: 10px; }
+    .drive-label::before { content: ''; height: 1px; width: 25px; background: currentColor; }
+    .intro { position: absolute; top: 20%; left: 50%; transform: translateX(-50%); text-align: center; color: #24414a; transition: opacity .65s, translate .65s; width: min(90%, 520px); }
+    .intro h1 { font-size: clamp(24px, 3vw, 44px); font-weight: 600; letter-spacing: -1.6px; margin: 0 0 13px; }
+    .intro p { font-size: 14px; letter-spacing: .3px; margin: 0; }
+    kbd { font: inherit; display: inline-grid; place-items: center; min-width: 27px; height: 27px; border: 1px solid currentColor; border-radius: 5px; margin: 0 4px; vertical-align: middle; }
+    .intro.hidden { opacity: 0; translate: 0 -10px; }
+    .distance-panel { position: absolute; left: 40px; bottom: 38px; display: flex; align-items: flex-end; gap: 21px; }
+    #route { width: 86px; height: 100px; opacity: .9; }
+    .eyebrow { font-size: 11px; letter-spacing: 2.5px; font-weight: 600; opacity: .65; }
+    .distance { margin-top: 6px; font-size: 27px; font-weight: 500; letter-spacing: -1px; font-variant-numeric: tabular-nums; }
+    .distance small { font-size: 12px; letter-spacing: 1px; opacity: .65; margin-left: 6px; }
+    .journey { display: flex; align-items: center; gap: 7px; font-size: 11px; letter-spacing: 1.6px; margin-top: 13px; opacity: .75; }
+    .journey span { font-size: 21px; line-height: 10px; }
+    .controls { position: absolute; bottom: 42px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 20px; white-space: nowrap; }
+    .control { display: flex; align-items: center; gap: 7px; font-size: 12px; color: #e0e7dfb3; }
+    .control kbd { border-color: #e5ece344; margin: 0; color: #f5f6ec; background: #16323433; width: 26px; height: 27px; }
+    .control .key-pair { display: flex; gap: 3px; }
+    .speed-panel { position: absolute; right: 40px; bottom: 37px; width: 190px; text-align: right; }
+    .speed-line { display: flex; align-items: baseline; justify-content: flex-end; gap: 10px; }
+    #speed { font-size: 82px; line-height: 1; font-weight: 350; letter-spacing: -5px; font-variant-numeric: tabular-nums; }
+    .speed-unit { font-size: 11px; letter-spacing: 1px; opacity: .7; }
+    .speed-meter { height: 4px; background: #f3f8ed22; margin-top: 15px; overflow: hidden; }
+    #speed-fill { height: 100%; width: 0; background: var(--orange); }
+    .gear-row { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; font-size: 11px; letter-spacing: 1.5px; }
+    #gear { color: var(--orange); font-size: 15px; font-weight: 700; }
+    #condition { opacity: .7; }
+    .impact-flash { position: absolute; inset: 0; box-shadow: inset 0 0 120px #e9533988; opacity: 0; }
+    .collision-notice { position: absolute; top: 21%; left: 50%; transform: translateX(-50%); padding: 12px 20px; border: 1px solid #ffb598; border-radius: 6px; background: #743527ec; color: #fff6ec; font-size: 14px; font-weight: 650; letter-spacing: 1.5px; white-space: nowrap; }
+    .collision-notice[hidden] { display: none; }
+    .pause-screen { pointer-events: auto; position: absolute; inset: 0; display: grid; place-items: center; background: #10283170; backdrop-filter: blur(8px); }
+    .pause-screen[hidden] { display: none; }
+    .pause-card { text-align: center; padding: 34px; }
+    .pause-card h2 { font-size: clamp(36px, 5vw, 58px); font-weight: 500; letter-spacing: -2px; margin: 15px 0 10px; }
+    .pause-card p { font-size: 15px; opacity: .7; margin-bottom: 28px; }
+    .resume { border: 0; background: #ff8659; color: #222e30; padding: 15px 38px; border-radius: 5px; font-weight: 650; }
+    .touch-controls { display: none; position: absolute; left: 22px; right: 22px; bottom: 25px; justify-content: space-between; pointer-events: none; }
+    .touch-group { display: flex; gap: 9px; }
+    .touch-controls button { pointer-events: auto; touch-action: none; user-select: none; -webkit-user-select: none; width: 57px; height: 54px; border: 1px solid #e4ecdc55; border-radius: 12px; background: #1c343e70; font-size: 25px; }
+    .touch-controls button.active { background: #ff8659; color: #17343c; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+    @media (max-width: 850px) { .controls { gap: 12px; bottom: 29px; } .control { gap: 5px; } .control span:last-child { display: none; } .speed-panel { width: 145px; right: 25px; bottom: 27px; } #speed { font-size: 66px; } .distance-panel { left: 25px; bottom: 28px; gap: 10px; } #route { width: 65px; } }
+    @media (max-width: 600px), (pointer: coarse) { header { inset: 22px 22px auto; } .wordmark { font-size: 29px; } .brand-caption { font-size: 9px; padding-left: 12px; letter-spacing: 1.7px; } .brand { gap: 12px; } .header-right { gap: 12px; } .location { display: none; } .drive-label { left: 23px; top: 82px; font-size: 10px; } .intro { top: 19%; } .intro h1 { letter-spacing: -1px; } .touch-controls { display: flex; } .controls { display: none; } .distance-panel { bottom: 105px; left: 23px; } #route { display: none; } .distance { font-size: 24px; } .journey { display: none; } .speed-panel { bottom: 104px; right: 23px; width: 126px; } #speed { font-size: 56px; } .speed-meter { margin-top: 8px; } .gear-row { margin-top: 8px; } }
+    @media (max-height: 500px) { header { top: 17px; } .drive-label { top: 73px; } .intro { top: 18%; } .intro h1 { font-size: 25px; margin-bottom: 7px; } .distance-panel { bottom: 90px; } .speed-panel { bottom: 90px; } #route { display: none; } }
+    @media (prefers-reduced-motion: reduce) { .intro { transition: none; } }
+  </style>
+</head>
+<body>
+  <canvas id="world" aria-label="A red sports car on an endless four-lane mountain highway. Use up to accelerate, down to brake, and left or right to steer."></canvas>
+  <main class="hud" aria-label="APEX racing game">
+    <header>
+      <div class="brand"><div class="wordmark">APE<span>X</span></div><div class="brand-caption">ENDLESS<br>DRIVE</div></div>
+      <div class="header-right"><div class="location"><svg viewBox="0 0 30 24" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M1 21 12 3l7 11 4-6 6 13H1Z"/><path d="m8 10 4 2 3-4"/></svg>ALPINE PASS</div><button id="pause" class="icon-button" aria-label="Pause game" title="Pause (Esc)"><svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M5 3h3v14H5zm7 0h3v14h-3z"/></svg></button></div>
+    </header>
+    <div class="drive-label">FREE DRIVE / NO FINISH LINE</div>
+    <div class="intro" id="intro"><h1>Take the long way.</h1><p>Hold <kbd>↑</kbd> to hit the road</p></div>
+    <div id="impact-flash" class="impact-flash" aria-hidden="true"></div>
+    <div id="collision-notice" class="collision-notice" hidden>COLLISION · SPEED LOST</div>
+    <div class="distance-panel"><canvas id="route" width="172" height="200" aria-label="Upcoming road curves"></canvas><div><div class="eyebrow">DISTANCE</div><div class="distance"><span id="distance">0.00</span><small>KM</small></div><div class="journey"><span>∞</span> ENDLESS HIGHWAY</div></div></div>
+    <div class="controls" aria-label="Keyboard controls"><div class="control"><kbd>↑</kbd><span>Accelerate</span></div><div class="control"><span class="key-pair"><kbd>←</kbd><kbd>→</kbd></span><span>Steer</span></div><div class="control"><kbd>↓</kbd><span>Brake</span></div></div>
+    <div class="speed-panel"><div class="speed-line"><span id="speed">0</span><span class="speed-unit">KM/H</span></div><div class="speed-meter"><div id="speed-fill"></div></div><div class="gear-row"><span>GEAR <b id="gear">N</b></span><span id="condition">IDLE</span></div></div>
+    <div class="touch-controls" aria-label="Touch driving controls"><div class="touch-group"><button data-key="ArrowLeft" aria-label="Steer left">←</button><button data-key="ArrowRight" aria-label="Steer right">→</button></div><div class="touch-group"><button data-key="ArrowDown" aria-label="Brake">↓</button><button data-key="ArrowUp" aria-label="Accelerate">↑</button></div></div>
+    <div class="pause-screen" id="pause-screen" hidden><section class="pause-card" aria-labelledby="pause-title"><div class="eyebrow">TAKE A BREATHER</div><h2 id="pause-title">Enjoy the view.</h2><p>The road will be here when you’re ready.</p><button class="resume" id="resume">Resume drive</button></section></div>
+    <span class="sr-only" id="announcement" role="status">Ready. Hold the up arrow to accelerate.</span>
+  </main>
+  <script>
+    (() => {
+      'use strict';
+      const canvas = document.getElementById('world');
+      const ctx = canvas.getContext('2d', { alpha: false });
+      const route = document.getElementById('route').getContext('2d');
+      const el = Object.fromEntries(['speed', 'distance', 'gear', 'condition', 'speed-fill', 'intro', 'pause', 'pause-screen', 'resume', 'announcement', 'impact-flash', 'collision-notice'].map(id => [id, document.getElementById(id)]));
+      const SEG = 180, ROAD = 1450, DEPTH = .95, CAMERA = 1350, DRAW = 190, MAX_SPEED = 13200;
+      const CAR_DEPTH = CAMERA * DEPTH / (2 * (.825 - .405));
+      const CAR_HALF_WIDTH = 210, CAR_HALF_LENGTH = 430, TRAFFIC_RANGE = 52000;
+      const traffic = [], trafficColors = [
+        ['#e4b45b', '#f4ce80', '#b78539'], ['#4ba4a2', '#7fc4b8', '#357773'],
+        ['#e4e5d8', '#faf5df', '#a8b6ad'], ['#5588b4', '#83b1ce', '#365c81'],
+        ['#a786ad', '#c7abc8', '#715e83'], ['#91aa67', '#b5c78c', '#607f46']
+      ];
+      let impactTime = 0, collisionCooldown = 0, collisionCount = 0, spawnSerial = 0;
+      const keys = new Set(), touches = new Map();
+      let width = 0, height = 0, dpr = 1, position = 0, speed = 0, player = .23, steer = 0, bank = 0, skyOffset = 0;
+      let carX = roadCenter(0) + player * ROAD * Math.hypot(1, roadSlope(0)), heading = Math.atan(roadSlope(0)), distance = 0;
+      let cameraX = 0, cameraZ = 0, cameraY = CAMERA, cameraSin = 0, cameraCos = 1;
+      let started = false, paused = false, lastTime = 0, hudTime = 0, elapsed = 0;
+      const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+      const mix = (a, b, t) => a + (b - a) * t;
+      const fract = v => v - Math.floor(v);
+      const random = n => fract(Math.sin(n * 127.1 + 311.7) * 43758.5453123);
+      // The road is a fixed path through the world, independent of the car.
+      // Incommensurate waves give it continuous bends without a stored track or end.
+      function roadCenter(z) { return 11000 * Math.sin(z / 16000 - .8) + 6500 * Math.sin(z / 29000 - 1.1) + 2500 * Math.sin(z / 8300 + .3); }
+      function roadSlope(z) { return 11000 / 16000 * Math.cos(z / 16000 - .8) + 6500 / 29000 * Math.cos(z / 29000 - 1.1) + 2500 / 8300 * Math.cos(z / 8300 + .3); }
+      function roadBend(z) { return -11000 / 16000 ** 2 * Math.sin(z / 16000 - .8) - 6500 / 29000 ** 2 * Math.sin(z / 29000 - 1.1) - 2500 / 8300 ** 2 * Math.sin(z / 8300 + .3); }
+      function elevation(n) { return Math.sin(n / 100) * 220 + Math.sin(n / 237) * 370; }
+      function trafficPose(car) {
+        const slope = roadSlope(car.s), length = Math.hypot(1, slope), offset = (-.75 + car.lane * .5) * ROAD;
+        return { x: roadCenter(car.s) + offset / length, z: car.s - offset * slope / length, heading: Math.atan(slope) };
+      }
+      function makeTrafficCar(id, s, lane, cruise = (68 + random(id + 200) * 62) * 55) {
+        const car = { id, s, lane, cruise, speed: cruise, stun: 0, colors: trafficColors[id % trafficColors.length] };
+        Object.assign(car, trafficPose(car));
+        car.previousX = car.x; car.previousZ = car.z;
+        return car;
+      }
+      function populateTraffic() {
+        for (let i = 0; i < 24; i++) {
+          let s = -TRAFFIC_RANGE + (i + .5) * TRAFFIC_RANGE / 12 + (random(i + 91) - .5) * 1300;
+          if (Math.abs(s) < 6000) s += Math.sign(s || 1) * 6000;
+          traffic.push(makeTrafficCar(i, s, i % 4));
+        }
+      }
+      function updateTraffic(dt) {
+        for (const car of traffic) {
+          car.previousX = car.x; car.previousZ = car.z;
+          if (Math.abs(car.s - position) > TRAFFIC_RANGE) {
+            const side = car.s < position ? 1 : -1;
+            for (let attempt = 0; attempt < 8; attempt++) {
+              const s = position + side * (TRAFFIC_RANGE * (.85 + random(++spawnSerial) * .13));
+              if (traffic.some(other => other !== car && other.lane === car.lane && Math.abs(other.s - s) < 3200)) continue;
+              car.s = s; car.speed = car.cruise; car.stun = 0;
+              Object.assign(car, trafficPose(car));
+              // Recycling happens beyond view, never as a sweep across the player.
+              car.previousX = car.x; car.previousZ = car.z;
+              break;
+            }
+          }
+        }
+        const moves = [];
+        for (let lane = 0; lane < 4; lane++) {
+          const cars = traffic.filter(car => car.lane === lane).sort((a, b) => b.s - a.s);
+          for (let i = 0; i < cars.length; i++) {
+            const car = cars[i], leader = cars[i - 1], slope = roadSlope(car.s), length = Math.hypot(1, slope);
+            const offset = (-.75 + car.lane * .5) * ROAD;
+            const pathScale = length * (1 - offset * roadBend(car.s) / length ** 3);
+            car.stun = Math.max(0, car.stun - dt);
+            let target = car.stun > 0 ? 0 : car.cruise;
+            if (leader) {
+              const gap = (leader.s - car.s) * length;
+              target = Math.min(target, Math.max(0, leader.speed + (gap - 1200 - car.speed * .7) * .9));
+            }
+            car.speed += clamp(target - car.speed, -6500 * dt, 1700 * dt);
+            let nextS = car.s + car.speed * dt / pathScale;
+            if (leader) nextS = Math.min(nextS, Math.max(car.s, leader.s - 1050 / length));
+            moves.push([car, nextS]);
+          }
+        }
+        for (const [car, nextS] of moves) { car.s = nextS; Object.assign(car, trafficPose(car)); }
+      }
+      // Sweep both oriented rectangles over the frame. Testing just their final
+      // positions would miss a fast side impact or a head-on pass between frames.
+      function sweptCollision(previousX, previousZ, car, playerHeading) {
+        const pf = { x: Math.sin(playerHeading), z: Math.cos(playerHeading) }, pr = { x: pf.z, z: -pf.x };
+        const tf = { x: Math.sin(car.heading), z: Math.cos(car.heading) }, tr = { x: tf.z, z: -tf.x };
+        const dx = previousX - car.previousX, dz = previousZ - car.previousZ;
+        const vx = carX - previousX - (car.x - car.previousX), vz = position - previousZ - (car.z - car.previousZ);
+        let enter = 0, exit = 1, normal = null, penetration = Infinity, overlapNormal = null, overlapping = true;
+        for (const axis of [pf, pr, tf, tr]) {
+          const radius = CAR_HALF_LENGTH * (Math.abs(axis.x * pf.x + axis.z * pf.z) + Math.abs(axis.x * tf.x + axis.z * tf.z))
+            + CAR_HALF_WIDTH * (Math.abs(axis.x * pr.x + axis.z * pr.z) + Math.abs(axis.x * tr.x + axis.z * tr.z));
+          const separation = dx * axis.x + dz * axis.z, velocity = vx * axis.x + vz * axis.z;
+          const depth = radius - Math.abs(separation);
+          if (depth < 0) overlapping = false;
+          if (depth < penetration) { penetration = depth; const sign = Math.sign(separation) || -Math.sign(velocity) || 1; overlapNormal = { x: axis.x * sign, z: axis.z * sign }; }
+          if (Math.abs(velocity) < 1e-8) { if (depth < 0) return null; continue; }
+          const a = (-radius - separation) / velocity, b = (radius - separation) / velocity;
+          const first = Math.min(a, b), last = Math.max(a, b);
+          if (first >= enter) { enter = first; const sign = Math.sign(separation + velocity * first) || 1; normal = { x: axis.x * sign, z: axis.z * sign }; }
+          exit = Math.min(exit, last);
+          if (enter > exit) return null;
+        }
+        if (exit < 0 || enter > 1) return null;
+        return { time: enter, normal: overlapping ? overlapNormal : normal, penetration: overlapping ? Math.max(0, penetration) : 0 };
+      }
+      function collideWithTraffic(previousX, previousZ, travelHeading) {
+        let nearest = null;
+        for (const car of traffic) {
+          const hit = sweptCollision(previousX, previousZ, car, travelHeading);
+          if (hit && hit.normal && (!nearest || hit.time < nearest.hit.time)) nearest = { car, hit };
+        }
+        if (!nearest) return;
+        const { car, hit } = nearest, remaining = 1 - hit.time;
+        carX = mix(previousX, carX, hit.time) + (car.x - car.previousX) * remaining + hit.normal.x * (hit.penetration + 12);
+        position = mix(previousZ, position, hit.time) + (car.z - car.previousZ) * remaining + hit.normal.z * (hit.penetration + 12);
+        if (collisionCooldown <= 0) {
+          speed *= .28; car.speed *= .35; car.stun = .65;
+          collisionCooldown = 1.1; impactTime = .85; collisionCount++;
+          el.announcement.textContent = 'Collision. Speed lost. Steer clear and accelerate to continue.';
+        }
+      }
+      function polygon(points, color) { ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(points[0], points[1]); for (let i = 2; i < points.length; i += 2) ctx.lineTo(points[i], points[i + 1]); ctx.closePath(); ctx.fill(); }
+      function line(points, color, weight) { ctx.strokeStyle = color; ctx.lineWidth = weight; ctx.lineJoin = 'round'; ctx.beginPath(); ctx.moveTo(points[0], points[1]); for (let i = 2; i < points.length; i += 2) ctx.lineTo(points[i], points[i + 1]); ctx.stroke(); }
+      function resize() {
+        width = innerWidth; height = innerHeight; dpr = Math.min(devicePixelRatio || 1, 2);
+        canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      }
+      function background() {
+        const horizon = height * .405;
+        const sky = ctx.createLinearGradient(0, 0, 0, horizon + height * .13);
+        sky.addColorStop(0, '#8fbcc9'); sky.addColorStop(.62, '#d2d9cf'); sky.addColorStop(1, '#f8d5ae');
+        ctx.fillStyle = sky; ctx.fillRect(0, 0, width, height);
+        const sunX = width * .76 - Math.sin(skyOffset * .05) * width * .06, sunY = height * .22;
+        const glow = ctx.createRadialGradient(sunX, sunY, 5, sunX, sunY, height * .21);
+        glow.addColorStop(0, '#fff1c870'); glow.addColorStop(1, '#ffe2ad00');
+        ctx.fillStyle = glow; ctx.fillRect(sunX - height * .22, 0, height * .44, height * .5);
+        ctx.fillStyle = '#fff0c5'; ctx.beginPath(); ctx.arc(sunX, sunY, height * .043, 0, Math.PI * 2); ctx.fill();
+        // The distant scenery turns with the car's view.
+        const mountainLayers = [
+          { base: .437, amp: .17, step: .12, color: '#8aa5a6', light: '#b2bdb2', seed: 5 },
+          { base: .49, amp: .20, step: .16, color: '#678b8b', light: '#8aa39a', seed: 19 },
+          { base: .53, amp: .16, step: .14, color: '#486f6e', light: '#6e9180', seed: 27 }
+        ];
+        for (const layer of mountainLayers) {
+          const step = Math.max(width, height * 1.2) * layer.step, shift = (skyOffset * (layer.seed + 8)) % step;
+          const points = [-step, height * layer.base];
+          for (let i = -2; i < width / step + 3; i++) {
+            const x = i * step - shift, peak = height * (layer.base - layer.amp * (.45 + random(i + layer.seed) * .55));
+            points.push(x, peak, x + step * .48, peak + height * layer.amp * .4);
+          }
+          points.push(width + step, height * .67, -step, height * .67); polygon(points, layer.color);
+          for (let i = -2; i < width / step + 3; i++) {
+            const x = i * step - shift, peak = height * (layer.base - layer.amp * (.45 + random(i + layer.seed) * .55));
+            polygon([x, peak, x + step * .48, peak + height * layer.amp * .4, x + step * .83, height * layer.base, x + step * .27, height * layer.base], layer.light);
+          }
+        }
+        const grass = ctx.createLinearGradient(0, height * .405, 0, height);
+        grass.addColorStop(0, '#9ca580'); grass.addColorStop(.3, '#87986b'); grass.addColorStop(1, '#809369');
+        ctx.fillStyle = grass; ctx.fillRect(0, height * .405, width, height * .595);
+      }
+      function cameraPoint(x, y, z) {
+        const dx = x - cameraX, dz = z - cameraZ;
+        return { x: dx * cameraCos - dz * cameraSin, y: y - cameraY, z: dx * cameraSin + dz * cameraCos };
+      }
+      function project(point) {
+        const scale = DEPTH / point.z;
+        const fieldWidth = Math.max(width, height * 1.1);
+        return { x: width * .5 + scale * point.x * fieldWidth * .5, y: height * .405 - scale * point.y * height * .5, w: scale * ROAD * fieldWidth * .5, scale, depth: point.z };
+      }
+      function crossSection(index) {
+        const z = index * SEG, slope = roadSlope(z), length = Math.hypot(1, slope);
+        return { x: roadCenter(z), y: elevation(index), z, nx: 1 / length, nz: -slope / length };
+      }
+      function roadPoint(section, offset) {
+        return cameraPoint(section.x + section.nx * ROAD * offset, section.y, section.z + section.nz * ROAD * offset);
+      }
+      function roadside(section, offset) {
+        const point = roadPoint(section, offset);
+        return point.z > 50 ? project(point) : null;
+      }
+      function roadQuad(a, b, left, right, color, overlap = .6) {
+        const points = [roadPoint(a, left), roadPoint(b, left), roadPoint(b, right), roadPoint(a, right)];
+        paintCameraPolygon(points, color, overlap);
+      }
+      function paintCameraPolygon(points, color, overlap = 0) {
+        // Clip against the camera before dividing by depth, including when the
+        // player drives across the road or turns to face the other direction.
+        const clipped = [];
+        for (let i = 0; i < points.length; i++) {
+          const p = points[i], q = points[(i + 1) % points.length];
+          if (p.z >= 50) clipped.push(p);
+          if ((p.z >= 50) !== (q.z >= 50)) {
+            const t = (50 - p.z) / (q.z - p.z);
+            clipped.push({ x: mix(p.x, q.x, t), y: mix(p.y, q.y, t), z: 50 });
+          }
+        }
+        if (clipped.length < 3) return;
+        polygon(clipped.flatMap(point => { const p = project(point); return [p.x, p.y]; }), color);
+        // Cover seams in every orientation, including when crossing the road.
+        if (overlap > 0) { ctx.strokeStyle = color; ctx.lineWidth = overlap; ctx.stroke(); }
+      }
+      function drawTrafficCar(car) {
+        const sin = Math.sin(car.heading), cos = Math.cos(car.heading), ground = elevation(car.s / SEG);
+        const point = ([x, y, z]) => cameraPoint(car.x + x * cos + z * sin, ground + y, car.z - x * sin + z * cos);
+        paintCameraPolygon([[-250, 5, -480], [-250, 5, 480], [250, 5, 480], [250, 5, -480]].map(point), '#11282b55');
+        const [body, light, dark] = car.colors, faces = [];
+        const face = (vertices, color) => { const points = vertices.map(point); faces.push({ points, color, depth: points.reduce((sum, p) => sum + p.z, 0) / points.length }); };
+        for (const side of [-1, 1]) {
+          for (const axle of [-260, 260]) face([[side * 223, 22, axle - 83], [side * 223, 137, axle - 83], [side * 223, 137, axle + 83], [side * 223, 22, axle + 83]], '#1a292c');
+          face([[side * 210, 58, -430], [side * 210, 175, -430], [side * 210, 175, 430], [side * 210, 58, 430]], side > 0 ? dark : body);
+          face([[side * 205, 175, -265], [side * 148, 315, -125], [side * 148, 315, 135], [side * 205, 175, 290]], body);
+          face([[side * 200, 194, -235], [side * 151, 297, -113], [side * 151, 297, 122], [side * 200, 194, 260]], '#35515b');
+        }
+        face([[-210, 175, -430], [210, 175, -430], [205, 175, -265], [-205, 175, -265]], light);
+        face([[-205, 175, 290], [205, 175, 290], [210, 175, 430], [-210, 175, 430]], light);
+        face([[-148, 315, -125], [148, 315, -125], [148, 315, 135], [-148, 315, 135]], light);
+        face([[-205, 175, -265], [205, 175, -265], [148, 315, -125], [-148, 315, -125]], '#253d46');
+        face([[-148, 315, 135], [148, 315, 135], [205, 175, 290], [-205, 175, 290]], '#587b83');
+        for (const end of [-1, 1]) {
+          face([[-210, 58, end * 430], [-210, 175, end * 430], [210, 175, end * 430], [210, 58, end * 430]], end < 0 ? dark : body);
+          face([[-190, 50, end * 433], [-190, 80, end * 433], [190, 80, end * 433], [190, 50, end * 433]], '#253339');
+          for (const side of [-1, 1]) face([[side * 85, 119, end * 435], [side * 85, 151, end * 435], [side * 193, 151, end * 435], [side * 193, 119, end * 435]], end < 0 ? (car.stun > 0 ? '#fff1af' : '#ff8b68') : '#fff0bd');
+        }
+        faces.sort((a, b) => b.depth - a.depth);
+        for (const f of faces) paintCameraPolygon(f.points, f.color, .5);
+      }
+      function tree(x, y, size, seed) {
+        if (size < 2) return;
+        ctx.fillStyle = '#263f3c'; ctx.fillRect(x - size * .035, y - size * .4, size * .07, size * .42);
+        polygon([x - size * .3, y + size * .02, x + size * .8, y + size * .02, x + size * .3, y - size * .08], '#45634d55');
+        for (let j = 0; j < 3; j++) {
+          const base = y - size * (.15 + j * .22), half = size * (.34 - j * .075), top = base - size * .5;
+          polygon([x - half, base, x, top, x + half, base], seed > .5 ? '#294e47' : '#31594b');
+          polygon([x, top, x + half, base, x + size * .055, base], '#406854');
+        }
+      }
+      function scenery(s) {
+        const { a, index } = s, seed = random(index + 44);
+        if (index % 7 === 0) {
+          for (const side of [-1, 1]) {
+            const p = roadside(a, side * (1.5 + seed * 1.9));
+            if (p) tree(p.x, p.y, p.scale * (650 + seed * 800) * height * .5, seed);
+            const far = index % 14 === 0 ? roadside(a, side * (3.4 + seed)) : null;
+            if (far) tree(far.x, far.y, far.scale * 1050 * height * .5, 1 - seed);
+          }
+        }
+        if (index % 5 === 0) {
+          for (const side of [-1, 1]) {
+            const p = roadside(a, side * 1.12); if (!p) continue;
+            const pole = p.scale * 145 * height * .5, wide = Math.max(1, p.w * .011);
+            ctx.fillStyle = '#ede8cc'; ctx.fillRect(p.x - wide / 2, p.y - pole, wide, pole);
+            ctx.fillStyle = side < 0 ? '#e8a370' : '#e87751'; ctx.fillRect(p.x - wide / 2, p.y - pole, wide, pole * .26);
+          }
+        }
+        if (index % 90 === 35) {
+          const p = roadside(a, 1.36); if (!p) return;
+          const x = p.x, h = p.scale * 460 * height * .5, w = p.w * .21;
+          ctx.fillStyle = '#c6ccc0'; ctx.fillRect(x - w * .04, p.y - h, Math.max(1, w * .08), h);
+          ctx.fillStyle = '#ecca76'; ctx.fillRect(x - w / 2, p.y - h, w, w * .8);
+          const direction = roadBend((index + 25) * SEG) >= 0 ? 1 : -1;
+          line([x - w * .17 * direction, p.y - h + w * .16, x + w * .1 * direction, p.y - h + w * .4, x - w * .17 * direction, p.y - h + w * .64], '#344b43', Math.max(1, w * .075));
+        }
+      }
+      function drawRoad() {
+        const base = Math.floor(position / SEG);
+        cameraSin = Math.sin(heading); cameraCos = Math.cos(heading);
+        cameraX = carX - cameraSin * CAR_DEPTH; cameraZ = position - cameraCos * CAR_DEPTH;
+        cameraY = CAMERA + elevation(position / SEG);
+        const visible = [];
+        for (let index = base - DRAW; index < base + DRAW; index++) {
+          const a = crossSection(index), b = crossSection(index + 1);
+          const depths = [roadPoint(a, -1.27).z, roadPoint(a, 1.27).z, roadPoint(b, -1.27).z, roadPoint(b, 1.27).z];
+          if (Math.max(...depths) <= 50 || Math.min(...depths) > DRAW * SEG) continue;
+          visible.push({ a, b, index, depth: depths.reduce((sum, value) => sum + value, 0) / 4 });
+        }
+        for (const car of traffic) {
+          const p = cameraPoint(car.x, elevation(car.s / SEG), car.z);
+          if (p.z > 50 && p.z < DRAW * SEG && Math.abs(car.s - position) < DRAW * SEG) visible.push({ car, depth: p.z - CAR_HALF_LENGTH });
+        }
+        visible.sort((a, b) => b.depth - a.depth);
+        for (const s of visible) {
+          if (s.car) { drawTrafficCar(s.car); continue; }
+          const { a, b, index } = s, stripe = Math.floor(index / 3) % 2 === 0;
+          for (const side of [-1, 1]) {
+            roadQuad(a, b, side, side * 1.27, '#b2ac83');
+            roadQuad(a, b, side, side * 1.065, stripe ? '#e7d8b9' : '#c5694d');
+          }
+          roadQuad(a, b, -1, 1, stripe ? '#485458' : '#465256', 1.6);
+          roadQuad(a, b, -.972, -.955, '#dedbc8'); roadQuad(a, b, .955, .972, '#dedbc8');
+          if (stripe) for (let lane = 1; lane < 4; lane++) {
+            const center = -1 + lane * .5;
+            roadQuad(a, b, center - .006, center + .006, '#d7d8c8');
+          }
+          ctx.globalAlpha = 1 - Math.pow(clamp(s.depth / (DRAW * SEG), 0, 1), 4) * .65;
+          scenery(s);
+          ctx.globalAlpha = 1;
+        }
+        ctx.globalAlpha = 1;
+      }
+      function drawCar() {
+        const carSize = clamp(width * .14, 95, 230), scale = carSize / 200;
+        const bob = reducedMotion ? 0 : Math.sin(elapsed * 35) * Math.min(speed / MAX_SPEED, .7);
+        ctx.save(); ctx.translate(width * .5 + steer * 9, height * .825 + bob); ctx.scale(scale, scale);
+        ctx.rotate(reducedMotion ? 0 : steer * .024);
+        ctx.fillStyle = '#10202265'; ctx.beginPath(); ctx.ellipse(0, 2, 112, 18, 0, 0, Math.PI * 2); ctx.fill();
+        const turn = steer * 8;
+        // Tires, cabin, rear deck, and bumper form a compact low-poly sports car.
+        polygon([-93, -30, -76, -30, -75, 1, -92, 1], '#19272a');
+        polygon([76, -30, 94, -30, 93, 1, 76, 1], '#19272a');
+        polygon([-87, -28, -75 + turn, -77, -49 + turn, -94, 49 + turn, -94, 76 + turn, -77, 87, -28], '#e56b43');
+        polygon([-71 + turn, -72, -47 + turn, -90, 47 + turn, -90, 70 + turn, -72, 77, -44, -77, -44], '#f88c59');
+        polygon([-61 + turn, -71, -42 + turn, -86, 42 + turn, -86, 60 + turn, -71, 64 + turn, -54, -64 + turn, -54], '#233f47');
+        polygon([-42 + turn, -83, 40 + turn, -83, 55 + turn, -70, -51 + turn, -70], '#547077');
+        line([-59 + turn, -61, 59 + turn, -61], '#77909266', 1.5);
+        polygon([-88, -43, -67 + turn, -53, 67 + turn, -53, 89, -43, 99, -24, 92, -6, -92, -6, -99, -24], '#dd573b');
+        polygon([-88, -43, -66 + turn, -51, 67 + turn, -51, 89, -43, 81, -29, -81, -29], '#fa8858');
+        polygon([-99, -24, -82, -29, 82, -29, 99, -24, 92, -6, -92, -6], '#c84a34');
+        polygon([-90, -11, 90, -11, 83, 0, -83, 0], '#26343a');
+        polygon([-91, -24, -36, -24, -34, -17, -90, -17], keys.has('ArrowDown') ? '#ffecb3' : '#ffac81');
+        polygon([36, -24, 91, -24, 90, -17, 34, -17], keys.has('ArrowDown') ? '#ffecb3' : '#ffac81');
+        ctx.fillStyle = '#26343a'; ctx.fillRect(-23, -24, 46, 11);
+        ctx.fillStyle = '#ddd6b8'; ctx.fillRect(-15, -22, 30, 7);
+        ctx.fillStyle = '#21343c'; ctx.font = 'bold 5px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('APEX', 0, -16.5);
+        line([-80, -3, -58, -3], '#869594', 3); line([58, -3, 80, -3], '#869594', 3);
+        polygon([-96, -47, -81, -49, -81, -43, -96, -42], '#253b40'); polygon([81, -49, 96, -47, 96, -42, 81, -43], '#253b40');
+        line([-72, -37, 72, -37], '#ad4735', 2);
+        ctx.restore();
+      }
+      function updateHUD() {
+        const kmh = Math.round(speed / 55), offroad = Math.abs(player) > .95;
+        el.speed.textContent = kmh;
+        el.distance.textContent = (distance / 198000).toFixed(2);
+        el.gear.textContent = kmh < 1 ? 'N' : String(Math.min(6, 1 + Math.floor(kmh / 43)));
+        el['speed-fill'].style.width = `${speed / MAX_SPEED * 100}%`;
+        el.condition.textContent = paused ? 'PAUSED' : impactTime > 0 ? 'COLLISION' : offroad && kmh > 0 ? 'OFF ROAD' : keys.has('ArrowDown') && kmh > 0 ? 'BRAKING' : kmh > 0 ? 'CRUISING' : 'IDLE';
+        el['collision-notice'].hidden = impactTime <= 0;
+        el['impact-flash'].style.opacity = reducedMotion ? 0 : clamp(impactTime / .85, 0, 1);
+        route.clearRect(0, 0, 172, 200); route.lineCap = 'round'; route.lineJoin = 'round';
+        let px = 78; const points = [[px, 182]], roadHeading = Math.atan(roadSlope(position));
+        for (let i = 1; i < 28; i++) { const bend = Math.atan(roadSlope(position + i * SEG * 4)) - roadHeading; px += Math.sin(bend) * 4.1; points.push([px, 182 - i * 5.5]); }
+        for (const [color, weight] of [['#e2ecdb24', 14], ['#e2ecdb99', 2]]) {
+          route.beginPath(); route.strokeStyle = color; route.lineWidth = weight;
+          points.forEach(([x, y], i) => i ? route.lineTo(x, y) : route.moveTo(x, y)); route.stroke();
+        }
+        route.fillStyle = '#ff9866'; route.beginPath(); route.moveTo(78, 172); route.lineTo(71, 188); route.lineTo(85, 188); route.closePath(); route.fill();
+      }
+      function clearControls() { keys.clear(); touches.clear(); document.querySelectorAll('[data-key]').forEach(button => button.classList.remove('active')); }
+      function setPaused(value) {
+        if (paused === value) return;
+        paused = value; clearControls(); el['pause-screen'].hidden = !paused;
+        el.pause.setAttribute('aria-label', paused ? 'Resume game' : 'Pause game');
+        el.announcement.textContent = paused ? 'Game paused.' : 'Drive resumed.';
+        if (paused) el.resume.focus(); else el.pause.focus({ preventScroll: true });
+        updateHUD();
+      }
+      function update(dt) {
+        if (paused) return;
+        elapsed += dt;
+        impactTime = Math.max(0, impactTime - dt);
+        collisionCooldown = Math.max(0, collisionCooldown - dt);
+        const accelerating = keys.has('ArrowUp'), braking = keys.has('ArrowDown');
+        if (accelerating && !started) { started = true; el.intro.classList.add('hidden'); el.announcement.textContent = 'Driving. Left and right to steer. Down to brake. Escape to pause.'; }
+        speed = clamp(speed + (braking ? -8500 : accelerating ? 3900 : -1300) * dt, 0, MAX_SPEED);
+        const ratio = speed / MAX_SPEED;
+        const direction = Number(keys.has('ArrowRight')) - Number(keys.has('ArrowLeft'));
+        steer = mix(steer, direction * Math.min(1, ratio * 5), 1 - Math.exp(-dt * 8));
+        // Only steering changes the car's heading. Throttle moves it along that
+        // heading, even when the road curves away or the car leaves the asphalt.
+        const turn = direction * (.25 + ratio * .6) * Math.min(1, speed / 1500) * dt;
+        const travelHeading = heading + turn / 2;
+        heading = Math.atan2(Math.sin(heading + turn), Math.cos(heading + turn));
+        if (Math.abs(player) > .95 && speed > MAX_SPEED * .32) speed = Math.max(MAX_SPEED * .32, speed - 6700 * dt);
+        const travel = speed * dt;
+        const previousX = carX, previousZ = position;
+        carX += Math.sin(travelHeading) * travel;
+        position += Math.cos(travelHeading) * travel;
+        if (started) { updateTraffic(dt); collideWithTraffic(previousX, previousZ, travelHeading); }
+        // Count driven distance, excluding a collision's separation nudge.
+        distance += Math.min(travel, Math.hypot(carX - previousX, position - previousZ));
+        player = (carX - roadCenter(position)) / (ROAD * Math.hypot(1, roadSlope(position)));
+        skyOffset += turn * 25;
+        bank = mix(bank, reducedMotion ? 0 : -steer * .012, 1 - Math.exp(-dt * 3));
+      }
+      function render(now) {
+        const dt = lastTime ? Math.min((now - lastTime) / 1000, .05) : 0; lastTime = now;
+        update(dt);
+        const shake = reducedMotion ? 0 : Math.max(0, impactTime - .4) * 9;
+        ctx.save(); ctx.translate(width * .5 + Math.sin(elapsed * 65) * shake, height * .5 + Math.cos(elapsed * 53) * shake); ctx.rotate(bank); ctx.scale(1.025, 1.025); ctx.translate(-width * .5, -height * .5);
+        background(); drawRoad(); ctx.restore(); drawCar();
+        if (now - hudTime > 80) { updateHUD(); hudTime = now; }
+        requestAnimationFrame(render);
+      }
+      window.addEventListener('keydown', event => {
+        if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Escape', 'p', 'P'].includes(event.key)) {
+          event.preventDefault();
+          if (['Escape', 'p', 'P'].includes(event.key)) { if (!event.repeat) setPaused(!paused); }
+          else if (!paused) keys.add(event.key);
+        }
+      });
+      window.addEventListener('keyup', event => { keys.delete(event.key); });
+      window.addEventListener('blur', () => { clearControls(); if (started) setPaused(true); });
+      document.addEventListener('visibilitychange', () => { if (document.hidden) { clearControls(); if (started) setPaused(true); } lastTime = 0; });
+      el.pause.addEventListener('click', () => setPaused(!paused));
+      el.resume.addEventListener('click', () => setPaused(false));
+      document.querySelectorAll('[data-key]').forEach(button => {
+        button.addEventListener('pointerdown', event => { event.preventDefault(); if (paused) return; button.setPointerCapture(event.pointerId); touches.set(event.pointerId, button.dataset.key); keys.add(button.dataset.key); button.classList.add('active'); });
+        const release = event => { const key = touches.get(event.pointerId); touches.delete(event.pointerId); if (![...touches.values()].includes(key)) keys.delete(key); button.classList.remove('active'); };
+        button.addEventListener('pointerup', release); button.addEventListener('pointercancel', release); button.addEventListener('lostpointercapture', release);
+      });
+      window.addEventListener('resize', resize);
+      // Optional browser-agent access uses the same pause action and visible telemetry.
+      if (document.modelContext?.registerTool) {
+        const lifecycle = new AbortController();
+        const register = tool => { try { Promise.resolve(document.modelContext.registerTool(tool, { signal: lifecycle.signal })).catch(() => {}); } catch {} };
+        register({ name: 'read_drive_status', description: 'Read the current speed, distance, and pause status of the drive.', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true }, execute: () => ({ speedKmh: Math.round(speed / 55), distanceKm: +(distance / 198000).toFixed(2), paused }) });
+        register({ name: 'set_drive_paused', description: 'Pause or resume this drive, as with the visible pause and resume buttons.', inputSchema: { type: 'object', properties: { paused: { type: 'boolean' } }, required: ['paused'], additionalProperties: false }, annotations: { readOnlyHint: false }, execute: input => { if (!input || typeof input.paused !== 'boolean' || Object.keys(input).some(key => key !== 'paused')) throw new Error('Provide only a boolean paused value.'); setPaused(input.paused); return { paused }; } });
+        window.addEventListener('pagehide', () => lifecycle.abort(), { once: true });
+      }
+      populateTraffic();
+      resize(); updateHUD(); requestAnimationFrame(render);
+    })();
+  </script>
+</body>
+</html>
